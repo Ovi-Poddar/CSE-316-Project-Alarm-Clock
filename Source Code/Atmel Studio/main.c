@@ -1,126 +1,166 @@
 /* ---- Code for Digital Clock with Alarm using AVR Microcontroller ------ */
 
-#include <avr/io.h>
 #define F_CPU 11059200
+
+#include <avr/io.h>
 #include <util/delay.h>
-#include <stdlib.h>
 #include <avr/interrupt.h>
 
-#define enable            5
-#define registerselection 6
+#define D4 eS_PORTD4
+#define D5 eS_PORTD5
+#define D6 eS_PORTD6
+#define D7 eS_PORTD7
+#define RS eS_PORTC6
+#define EN eS_PORTC7
+#include "lcd.h"
 
-void send_a_command(unsigned char command);
-void send_a_character(unsigned char character);
-void send_a_string(char *string_of_characters);
+#include <stdlib.h>
+#include <stdio.h>
 
 ISR(TIMER1_COMPA_vect);
 
-static volatile int SEC =0; //allocating integer memory for storing seconds
+static volatile int SEC =45; //allocating integer memory for storing seconds
 static volatile int MIN =0; // allocating integer memory for storing minutes
 static volatile int HOU =0; // allocating integer memory for storing hours
+
+void UART_init()
+{
+	UCSRA = 0b00000010;  // double speed
+	UCSRB = 0b00011000;  // Enable Tx and Rx, polling
+	UCSRC = 0b10000110;  // Async mode, no parity, 1 stop bit, 8 data bits
+						 //in double-speed mode, UBRR = clock/(8xbaud rate) - 1
+	int x = 143;
+	UBRRL = x;
+	UBRRH = (x >> 8);
+}
+
+unsigned char UART_RxChar()
+{
+	while ((UCSRA & (1 << RXC)) == 0);/* Wait till data is received */
+	return(UDR);	 /* Return the byte*/
+}
+
+void UART_TxChar(unsigned char ch)
+{
+	while (! (UCSRA & (1<<UDRE)));	/* Wait for empty transmit buffer*/
+	UDR = ch ;
+}
 
 int main(void)
 {
 	DDRA = 0b11000000; //only pin7 and pin8 of port a as output
 	DDRC = 0xFF; //Taking portC as output.
-	DDRD = 0xFF; 
+	DDRD = 0xFE; 
 	
 	TCCR1B |=(1<<CS12)|(1<<CS10)|(1<<WGM12); // setting prescale and CTC mode
-	OCR1A=10800; //setting compare value equal to counter clock frequency to get an interrupt every second
+	OCR1A=5000; //setting compare value equal to counter clock frequency to get an interrupt every second
 	sei(); // enabling global interrupts
 	TIMSK |=(1<<OCIE1A); //compare match interrupt enable
 	
-	LFUSE_DEFAULT = 0xFF ;
-	
+
 	char SHOWSEC [2]; //seconds displaying character on LCD
 	char SHOWMIN [2]; //minutes displaying character on LCD
 	char SHOWHOU [2]; // hours displaying character on LCD
 	
 	int ALSEC = 0; //alarm seconds storing memory
-	int ALMIN = 0; //alarm minutes storing memory
+	int ALMIN = 1; //alarm minutes storing memory
 	int ALHOU = 0; //alarm hours storing memory
 	
 	char SHOWALSEC [2];//alarm  seconds displaying character on LCD
 	char SHOWALMIN [2];// alarm minutes displaying character on LCD
 	char SHOWALHOU [2];//alarm hours displaying character on LCD
-
-	send_a_command(0x01); //Clear Screen 0x01 = 00000001
-	_delay_ms(50);
-	send_a_command(0x38); //telling lcd we are using 8bit command /data mode
-	_delay_ms(50);
-	send_a_command(0b00001111); //LCD SCREEN ON and courser blinking
-	_delay_ms(50);
+	
+	/*Reading msg from arduino interfaced with SD Card*/
+	UART_init();
+	stdout = fdevopen(UART_TxChar, NULL);
+	char str[10] = {0};
+	int idx;
+	for(idx = 0; ; idx++){
+		char c = UART_RxChar();
+		if(c == '#') break;
+		str[idx] = c;
+	}
+	str[idx] = '\0';
+	_delay_ms(100);
 	
 	
+	Lcd4_Init();
 	while(1)
 	{
+		Lcd4_Set_Cursor(1,0);
 		
 		itoa(HOU/10,SHOWHOU,10); //command for putting variable number in LCD(variable number, in which character to replace, which base is variable(ten here as we are counting number in base10))
-		send_a_string(SHOWHOU);// telling the display to show character(replaced by variable number) of first person after positioning the courser on LCD
+								// telling the display to show character(replaced by variable number) of first person after positioning the courser on LCD
+		Lcd4_Write_String(SHOWHOU);
 		// displaying tens place of hours above
 		itoa(HOU%10,SHOWHOU,10);
-		send_a_string(SHOWHOU);
+		Lcd4_Write_String(SHOWHOU);
 		// displaying ones place of hours above
-		send_a_string (":"); //displaying character
-		send_a_command(0x80 + 3); // shifting cursor  to 4th shell
+		Lcd4_Write_String(":");
+		Lcd4_Set_Cursor(1,3);
 
 		itoa(MIN/10,SHOWMIN,10);  ///as integer cannot store decimal values, when MIN=9, we have MIN/10 = 0.9(actual), = 0 for CPU(as integer cannot store decimal values)
-		send_a_string(SHOWMIN);
+		Lcd4_Write_String(SHOWMIN);
 		// displaying tens place of minutes above
 		itoa(MIN%10,SHOWMIN,10);
-		send_a_string(SHOWMIN);
+		Lcd4_Write_String(SHOWMIN);
 		// displaying ones place of minutes above
-		send_a_command(0x80 + 5); // shifting cursor  to 6th shell
-		send_a_string (":");
-		send_a_command(0x80 + 6); // shifting cursor  to 7th shell
+		Lcd4_Write_String(":");
+		Lcd4_Set_Cursor(1,6);
 		
 		itoa(SEC/10,SHOWSEC,10);
-		send_a_string(SHOWSEC);
+		Lcd4_Write_String(SHOWSEC);
 		itoa(SEC%10,SHOWSEC,10);
-		send_a_string(SHOWSEC);
+		Lcd4_Write_String(SHOWSEC);
 		
 		if (bit_is_set(PINA,5))  //if alarm pin is high
 		{
-			send_a_string(" ALM:ON "); //show alarm is on
+			Lcd4_Write_String(" ALM:ON "); 
 			if ((ALHOU==HOU)&(ALMIN==MIN)&(ALSEC==SEC)) //alarm minute=min //and alarm hours= time hours and alarm seconds= time seconds
 			{
 				PORTA|=(1<<PINB7); //buzzer on
+				Lcd4_Set_Cursor(3, 0);
+				Lcd4_Write_String("    ");
+				Lcd4_Write_String(str);
 			}
 		}
 		if (bit_is_clear(PINA,5)) //if alarm pin is low
 		{
-			send_a_string(" ALM:OFF"); //show alarm is off
+			Lcd4_Write_String(" ALM:OFF"); //show alarm is off
 			PORTA&=~(1<<PINB7); //buzzer off
+		
+			Lcd4_Set_Cursor(3, 0);
+			Lcd4_Write_String("             ");
+
 		}
-		send_a_command(0x80 + 0x40 + 0); // move courser to second line zero position
-		
-		send_a_string ("ALARM:");
-		send_a_command(0x80 + 0x40 + 7); //move to eight position on second line
-		
+		Lcd4_Set_Cursor(2, 0);
+		Lcd4_Write_String("ALARM:");
+		Lcd4_Set_Cursor(2, 7);
 		// Showing alarm hours above
 		itoa(ALHOU/10,SHOWALHOU,10);
-		send_a_string(SHOWALHOU);
+		Lcd4_Write_String(SHOWALHOU);
 		itoa(ALHOU%10,SHOWALHOU,10);
-		send_a_string(SHOWALHOU);
-		send_a_command(0x80 + 0x40 +9);
-		send_a_string (":");
-		send_a_command(0x80 + 0x40 +10);
+		Lcd4_Write_String(SHOWALHOU);
+		Lcd4_Set_Cursor(2, 9);
+		Lcd4_Write_String (":");
+		Lcd4_Set_Cursor(2, 10);
 		
 		// Showing alarm hours above
 		itoa(ALMIN/10,SHOWALMIN,10);
-		send_a_string(SHOWALMIN);
+		Lcd4_Write_String(SHOWALMIN);
 		itoa(ALMIN%10,SHOWALMIN,10);
-		send_a_string(SHOWALMIN);
-		send_a_command(0x80 + 0x40+ 12);
-		send_a_string (":");
-		send_a_command(0x80 + 0x40+ 13);
+		Lcd4_Write_String(SHOWALMIN);
+		Lcd4_Set_Cursor(2, 12);
+		Lcd4_Write_String (":");
+		Lcd4_Set_Cursor(2, 13);
 		
 		// Showing alarm seconds above
 		itoa(ALSEC/10,SHOWALSEC,10);
-		send_a_string(SHOWALSEC);
+		Lcd4_Write_String(SHOWALSEC);
 		itoa(ALSEC%10,SHOWALSEC,10);
-		send_a_string(SHOWALSEC);
-		send_a_command(0x80 + 0); // shifting cursor  to 0th position
+		Lcd4_Write_String(SHOWALSEC);
+		
+		Lcd4_Set_Cursor(1,0);
 
 		if (bit_is_set(PINA,4)) // if switch is set to adjust TIME
 		{
@@ -221,6 +261,7 @@ int main(void)
 			}
 		}
 	}
+	
 }
 // Everything follows the same as described above for TIME
 ISR(TIMER1_COMPA_vect) //loop to be executed on counter compare match
@@ -250,31 +291,4 @@ ISR(TIMER1_COMPA_vect) //loop to be executed on counter compare match
 		HOU=0;
 	}
 
-}
-
-void send_a_command(unsigned char command)
-{
-	PORTC = command;
-	PORTD &= ~ (1<<registerselection); //putting 0 in RS to tell lcd we are sending command
-	PORTD |= 1<<enable; //telling lcd to receive command /data at the port
-	_delay_ms(3);
-	PORTD &= ~1<<enable; //telling lcd we completed sending data
-	PORTC = 0xFF;
-}
-
-void send_a_character(unsigned char character)
-{
-	PORTC = character;
-	PORTD |= 1<<registerselection; //telling LCD we are sending data not commands
-	PORTD |= 1<<enable; //telling LCD to start receiving command/data
-	_delay_ms(3);
-	PORTD &= ~1<<enable; //telling lcd we completed sending data/command
-	PORTC = 0xFF;
-}
-void send_a_string(char *string_of_characters)
-{
-	while(*string_of_characters > 0)
-	{
-		send_a_character(*string_of_characters++);
-	}
 }
